@@ -35,6 +35,7 @@ class FundaScraper(object):
         property_type: Optional[str] = None,
         min_floor_area: Optional[str] = None,
         max_floor_area: Optional[str] = None,
+        custom_url: Optional[str] = None
     ):
         # Init attributes
         self.area = area.lower().replace(" ", "-")
@@ -49,6 +50,7 @@ class FundaScraper(object):
         self.days_since = days_since
         self.min_floor_area = min_floor_area
         self.max_floor_area = max_floor_area
+        self.custom_url = custom_url
 
         # Instantiate along the way
         self.links: List[str] = []
@@ -123,6 +125,7 @@ class FundaScraper(object):
         days_since: Optional[int] = None,
         min_floor_area: Optional[str] = None,
         max_floor_area: Optional[str] = None,
+        custom_url: Optional[str] = None
     ) -> None:
         """Overwrite or initialise the searching scope."""
         if area is not None:
@@ -176,6 +179,9 @@ class FundaScraper(object):
         self.links = urls
 
     def _build_main_query_url(self) -> str:
+        if self.custom_url:
+            logger.info(f"*** Main URL: {self.custom_url} ***")
+            return self.custom_url
         query = "koop" if self.to_buy else "huur"
 
         main_url = (
