@@ -109,8 +109,9 @@ class FundaScraper(object):
 
         script_tag = soup.find_all("script", {"type": "application/ld+json"})[0]
         json_data = json.loads(script_tag.contents[0])
-        urls = [item["url"] for item in json_data["itemListElement"]]
-        return list(set(urls))
+        items_list = sorted(json_data["itemListElement"], key=lambda item: item.get("position", 0))
+        urls = [item["url"] for item in items_list]
+        return list(urls)
 
     def reset(
         self,
@@ -172,15 +173,16 @@ class FundaScraper(object):
                 logger.info(f"*** The last available page is {self.page_end} ***")
                 break
 
-        urls = list(set(urls))
+        urls = list(urls)
         logger.info(
             f"*** Got all the urls. {len(urls)} houses found from {self.page_start} to {self.page_end} ***"
         )
+        logger.info("\n".join(urls))
         self.links = urls
 
     def _build_main_query_url(self) -> str:
         if self.custom_url:
-            logger.info(f"*** Main URL: {self.custom_url} ***")
+            logger.info(f"*** Main custom URL: {self.custom_url} ***")
             return self.custom_url
         query = "koop" if self.to_buy else "huur"
 
