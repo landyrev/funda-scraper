@@ -1,10 +1,13 @@
 """Main funda scraper module"""
+
 import argparse
 import datetime
 import json
 import multiprocessing as mp
 import os
+from collections import OrderedDict
 from typing import List, Optional
+from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
 import requests
@@ -19,7 +22,7 @@ from funda_scraper.utils import logger
 
 class FundaScraper(object):
     """
-    Handles the main scraping function.
+    A class used to scrape real estate data from the Funda website.
     """
 
     def __init__(
@@ -35,8 +38,24 @@ class FundaScraper(object):
         property_type: Optional[str] = None,
         min_floor_area: Optional[str] = None,
         max_floor_area: Optional[str] = None,
-        custom_url: Optional[str] = None
+        custom_url: Optional[str] = None,
+        sort: Optional[str] = None,
     ):
+        """
+
+        :param area: The area to search for properties, formatted for URL compatibility.
+        :param want_to: Specifies whether the user wants to buy or rent properties.
+        :param page_start: The starting page number for the search.
+        :param n_pages: The number of pages to scrape.
+        :param find_past: Flag to indicate whether to find past listings.
+        :param min_price: The minimum price for the property search.
+        :param max_price: The maximum price for the property search.
+        :param days_since: The maximum number of days since the listing was published.
+        :param property_type: The type of property to search for.
+        :param min_floor_area: The minimum floor area for the property search.
+        :param max_floor_area: The maximum floor area for the property search.
+        :param sort: The sorting criterion for the search results.
+        """
         # Init attributes
         self.area = area.lower().replace(" ", "-")
         self.property_type = property_type
@@ -51,6 +70,7 @@ class FundaScraper(object):
         self.min_floor_area = min_floor_area
         self.max_floor_area = max_floor_area
         self.custom_url = custom_url
+        self.sort = sort
 
         # Instantiate along the way
         self.links: List[str] = []
@@ -71,12 +91,16 @@ class FundaScraper(object):
             f"days_since={self.days_since}, "
             f"min_floor_area={self.min_floor_area}, "
             f"max_floor_area={self.max_floor_area}, "
-            ")"
+            f"find_past={self.find_past})"
+            f"min_price={self.min_price})"
+            f"max_price={self.max_price})"
+            f"days_since={self.days_since})"
+            f"sort={self.sort})"
         )
 
     @property
     def to_buy(self) -> bool:
-        """Whether to buy or not"""
+        """Determines if the search is for buying or renting properties."""
         if self.want_to.lower() in ["buy", "koop", "b", "k"]:
             return True
         elif self.want_to.lower() in ["rent", "huur", "r", "h"]:
@@ -86,7 +110,7 @@ class FundaScraper(object):
 
     @property
     def check_days_since(self) -> int:
-        """Whether days since complies"""
+        """Validates the 'days_since' attribute."""
         if self.find_past:
             raise ValueError("'days_since' can only be specified when find_past=False.")
 
@@ -95,23 +119,43 @@ class FundaScraper(object):
         else:
             raise ValueError("'days_since' must be either None, 1, 3, 5, 10 or 30.")
 
+    @property
+    def check_sort(self) -> str:
+        """Validates the 'sort' attribute."""
+        if self.sort in [
+            None,
+            "relevancy",
+            "date_down",
+            "date_up",
+            "price_up",
+            "price_down",
+            "floor_area_down",
+            "plot_area_down",
+            "city_up" "postal_code_up",
+        ]:
+            return self.sort
+        else:
+            raise ValueError(
+                "'sort' must be either None, 'relevancy', 'date_down', 'date_up', 'price_up', 'price_down', "
+                "'floor_area_down', 'plot_area_down', 'city_up' or 'postal_code_up'. "
+            )
+
     @staticmethod
     def _check_dir() -> None:
-        """Check whether a temporary directory for data"""
+        """Ensures the existence of the directory for storing data."""
         if not os.path.exists("data"):
             os.makedirs("data")
 
     @staticmethod
     def _get_links_from_one_parent(url: str) -> List[str]:
-        """Scrape all the available housing items from one Funda search page."""
+        """Scrapes all available property links from a single Funda search page."""
         response = requests.get(url, headers=config.header)
         soup = BeautifulSoup(response.text, "lxml")
 
         script_tag = soup.find_all("script", {"type": "application/ld+json"})[0]
         json_data = json.loads(script_tag.contents[0])
-        items_list = sorted(json_data["itemListElement"], key=lambda item: item.get("position", 0))
-        urls = [item["url"] for item in items_list]
-        return list(urls)
+        urls = [item["url"] for item in json_data["itemListElement"]]
+        return urls
 
     def reset(
         self,
@@ -126,9 +170,10 @@ class FundaScraper(object):
         days_since: Optional[int] = None,
         min_floor_area: Optional[str] = None,
         max_floor_area: Optional[str] = None,
-        custom_url: Optional[str] = None
+        custom_url: Optional[str] = None,
+        sort: Optional[str] = None,
     ) -> None:
-        """Overwrite or initialise the searching scope."""
+        """Resets or initializes the search parameters."""
         if area is not None:
             self.area = area
         if property_type is not None:
@@ -151,9 +196,31 @@ class FundaScraper(object):
             self.min_floor_area = min_floor_area
         if max_floor_area is not None:
             self.max_floor_area = max_floor_area
+        if sort is not None:
+            self.sort = sort
+
+    @staticmethod
+    def remove_duplicates(lst: List[str]) -> List[str]:
+        """Removes duplicate links from a list."""
+        return list(OrderedDict.fromkeys(lst))
+
+    @staticmethod
+    def fix_link(link: str) -> str:
+        """Fixes a given property link to ensure proper URL formatting."""
+        link_url = urlparse(link)
+        link_path = link_url.path.split("/")
+        property_id = link_path.pop(5)
+        property_address = link_path.pop(4).split("-")
+        link_path = link_path[2:4]
+        property_address.insert(1, property_id)
+        link_path.extend(["-".join(property_address), "?old_ldp=true"])
+        fixed_link = urlunparse(
+            (link_url.scheme, link_url.netloc, "/".join(link_path), "", "", "")
+        )
+        return fixed_link
 
     def fetch_all_links(self, page_start: int = None, n_pages: int = None) -> None:
-        """Find all the available links across multiple pages."""
+        """Collects all available property links across multiple pages."""
 
         page_start = self.page_start if page_start is None else page_start
         n_pages = self.n_pages if n_pages is None else n_pages
@@ -173,12 +240,14 @@ class FundaScraper(object):
                 logger.info(f"*** The last available page is {self.page_end} ***")
                 break
 
-        urls = list(urls)
+        urls = self.remove_duplicates(urls)
+        fixed_urls = [self.fix_link(url) for url in urls]
+
         logger.info(
-            f"*** Got all the urls. {len(urls)} houses found from {self.page_start} to {self.page_end} ***"
+            f"*** Got all the urls. {len(fixed_urls)} houses found from {self.page_start} to {self.page_end} ***"
         )
         logger.info("\n".join(urls))
-        self.links = urls
+        self.links = fixed_urls
 
     def _build_main_query_url(self) -> str:
         if self.custom_url:
@@ -198,7 +267,7 @@ class FundaScraper(object):
             main_url += f"&object_type=%5B{','.join(formatted_property_types)}%5D"
 
         if self.find_past:
-            main_url = f"{main_url}&availability=%22unavailable%22"
+            main_url = f'{main_url}&availability=%5B"unavailable"%5D'
 
         if self.min_price is not None or self.max_price is not None:
             min_price = "" if self.min_price is None else self.min_price
@@ -213,12 +282,15 @@ class FundaScraper(object):
             max_floor_area = "" if self.max_floor_area is None else self.max_floor_area
             main_url = f"{main_url}&floor_area=%22{min_floor_area}-{max_floor_area}%22"
 
+        if self.sort is not None:
+            main_url = f"{main_url}&sort=%22{self.check_sort}%22"
+
         logger.info(f"*** Main URL: {main_url} ***")
         return main_url
 
     @staticmethod
     def get_value_from_css(soup: BeautifulSoup, selector: str) -> str:
-        """Use CSS selector to find certain features."""
+        """Extracts data from HTML using a CSS selector."""
         result = soup.select(selector)
         if len(result) > 0:
             result = result[0].text
@@ -227,7 +299,7 @@ class FundaScraper(object):
         return result
 
     def scrape_one_link(self, link: str) -> List[str]:
-        """Scrape all the features from one house item given a link."""
+        """Scrapes data from a single property link."""
 
         # Initialize for each page
         response = requests.get(link, headers=config.header)
@@ -298,13 +370,13 @@ class FundaScraper(object):
         return result
 
     def scrape_pages(self) -> None:
-        """Scrape all the content acoss multiple pages."""
+        """Scrapes data from all collected property links."""
 
         logger.info("*** Phase 2: Start scraping from individual links ***")
         df = pd.DataFrame({key: [] for key in self.selectors.keys()})
 
         # Scrape pages with multiprocessing to improve efficiency
-        # TODO: use asynctio instead
+        # TODO: use asyncio instead
         pools = mp.cpu_count()
         content = process_map(self.scrape_one_link, self.links, max_workers=pools)
 
@@ -319,7 +391,7 @@ class FundaScraper(object):
         self.raw_df = df
 
     def save_csv(self, df: pd.DataFrame, filepath: str = None) -> None:
-        """Save the result to a .csv file."""
+        """Saves the scraped data to a CSV file."""
         if filepath is None:
             self._check_dir()
             date = str(datetime.datetime.now().date()).replace("-", "")
@@ -333,7 +405,7 @@ class FundaScraper(object):
         self, raw_data: bool = False, save: bool = False, filepath: str = None
     ) -> pd.DataFrame:
         """
-        Scrape all links and all content.
+        Runs the full scraping process, optionally saving the results to a CSV file.
 
         :param raw_data: if true, the data won't be pre-processed
         :param save: if true, the data will be saved as a csv file
@@ -370,12 +442,12 @@ if __name__ == "__main__":
         type=str,
         help="Specify you want to 'rent' or 'buy'",
         default="rent",
+        choices=["rent", "buy"],
     )
     parser.add_argument(
         "--find_past",
-        type=bool,
-        help="Indicate whether you want to use hisotrical data or not",
-        default=False,
+        action="store_true",
+        help="Indicate whether you want to use historical data",
     )
     parser.add_argument(
         "--page_start", type=int, help="Specify which page to start scraping", default=1
@@ -396,16 +468,31 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
+        "--sort",
+        type=str,
+        help="Specify sorting",
+        default=None,
+        choices=[
+            None,
+            "relevancy",
+            "date_down",
+            "date_up",
+            "price_up",
+            "price_down",
+            "floor_area_down",
+            "plot_area_down",
+            "city_up" "postal_code_up",
+        ],
+    )
+    parser.add_argument(
         "--raw_data",
-        type=bool,
-        help="Indicate whether you want the raw scraping result or preprocessed one",
-        default=False,
+        action="store_true",
+        help="Indicate whether you want the raw scraping result",
     )
     parser.add_argument(
         "--save",
-        type=bool,
-        help="Indicate whether you want to save the data or not",
-        default=True,
+        action="store_true",
+        help="Indicate whether you want to save the data",
     )
 
     args = parser.parse_args()
@@ -418,6 +505,7 @@ if __name__ == "__main__":
         min_price=args.min_price,
         max_price=args.max_price,
         days_since=args.days_since,
+        sort=args.sort,
     )
     df = scraper.run(raw_data=args.raw_data, save=args.save)
     print(df.head())
